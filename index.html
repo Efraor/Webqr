@@ -1,35 +1,325 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Robot 3D en AR</title>
-  <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Robot 3D en Realidad Aumentada</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Roboto, sans-serif;
+        overflow: hidden;
+        background: radial-gradient(circle at top, #202533, #0b0d13 70%);
+        color: #f5f7ff;
+      }
+      #overlay {
+        position: fixed;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 12px 18px;
+        background: rgba(0, 0, 0, 0.6);
+        border-radius: 999px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 15px;
+        z-index: 10;
+        backdrop-filter: blur(6px);
+        transition: opacity 0.35s ease;
+      }
+      #overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #overlay span {
+        font-weight: 600;
+      }
+      #instructions {
+        position: fixed;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.55);
+        padding: 14px 20px;
+        border-radius: 14px;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+        font-size: 14px;
+        text-align: center;
+        line-height: 1.45;
+        width: min(90vw, 360px);
+        backdrop-filter: blur(8px);
+        z-index: 9;
+      }
+      #instructions.hidden {
+        display: none;
+      }
+      canvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+      .ar-active #instructions {
+        display: none;
+      }
+      .ar-active canvas {
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay"><span>Cargando modelo…</span><small id="progress">0%</small></div>
+    <div id="instructions">
+      Usa los dedos para rotar y acercar el robot. Pulsa el botón «Enter AR» para colocarlo en tu entorno.
+    </div>
+    <script type="module">
+      import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+      import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+      import { FBXLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FBXLoader.js';
+      import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
 
-  <style>
-    body {
-      margin: 0;
-      background: #000;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    model-viewer {
-      width: 100%;
-      height: 100vh;
-    }
-  </style>
-</head>
+      const overlay = document.getElementById('overlay');
+      const progressLabel = document.getElementById('progress');
+      const instructions = document.getElementById('instructions');
 
-<body>
-  <model-viewer
-    src="robot.fbx"
-    alt="Robot 3D"
-    ar
-    ar-modes="webxr scene-viewer quick-look"
-    camera-controls
-    auto-rotate
-    shadow-intensity="1"
-  ></model-viewer>
-</body>
+      const defaultBackground = new THREE.Color(0x0b0d13);
+      const scene = new THREE.Scene();
+      scene.background = defaultBackground;
+
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+      camera.position.set(0.4, 0.9, 2.6);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.target.set(0, 0.75, 0);
+
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x1a1d29, 1.15);
+      hemiLight.position.set(0, 3, 0);
+      scene.add(hemiLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 2.1);
+      dirLight.position.set(5, 10, 7);
+      dirLight.castShadow = true;
+      dirLight.shadow.bias = -0.0005;
+      dirLight.shadow.mapSize.set(2048, 2048);
+      scene.add(dirLight);
+
+      const ground = new THREE.Mesh(
+        new THREE.CircleGeometry(5, 64).rotateX(-Math.PI / 2),
+        new THREE.MeshStandardMaterial({ color: 0x11141f, roughness: 0.85, metalness: 0 })
+      );
+      ground.receiveShadow = true;
+      ground.position.y = 0;
+      scene.add(ground);
+
+      const reticle = new THREE.Mesh(
+        new THREE.RingGeometry(0.1, 0.14, 32).rotateX(-Math.PI / 2),
+        new THREE.MeshBasicMaterial({ color: 0x00e0ff, transparent: true, opacity: 0.9 })
+      );
+      reticle.matrixAutoUpdate = false;
+      reticle.visible = false;
+      scene.add(reticle);
+
+      const controller = renderer.xr.getController(0);
+      scene.add(controller);
+
+      let hitTestSource = null;
+      let hitTestRequested = false;
+
+      const mixers = new Set();
+      const mixerByObject = new Map();
+      const placedModels = new Set();
+      let referenceSpace = null;
+      let baseModel = null;
+      let baseAnimations = [];
+      let displayModel = null;
+
+      const loader = new FBXLoader();
+      loader.load(
+        'robot.fbx',
+        (object) => {
+          baseModel = object;
+          prepareModel(baseModel);
+          baseAnimations = (object.animations || []).map((clip) => clip.clone());
+
+          displayModel = createModelInstance();
+          displayModel.position.set(0, 0, 0);
+          scene.add(displayModel);
+
+          hideOverlay();
+        },
+        (event) => {
+          if (event.total) {
+            const percentage = Math.min(100, Math.round((event.loaded / event.total) * 100));
+            progressLabel.textContent = `${percentage}%`;
+          }
+        },
+        (error) => {
+          console.error('No se pudo cargar el modelo FBX', error);
+          overlay.querySelector('span').textContent = 'Error al cargar el modelo';
+          progressLabel.textContent = '';
+        }
+      );
+
+      controller.addEventListener('select', () => {
+        if (!baseModel || !reticle.visible) return;
+        const placed = createModelInstance();
+        if (!placed) return;
+        placed.position.setFromMatrixPosition(reticle.matrix);
+        placed.quaternion.setFromRotationMatrix(reticle.matrix);
+        scene.add(placed);
+        placedModels.add(placed);
+      });
+
+      function prepareModel(model) {
+        const scale = 0.01;
+        model.scale.set(scale, scale, scale);
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+      }
+
+      function createModelInstance() {
+        if (!baseModel) return null;
+        const instance = baseModel.clone(true);
+        prepareModel(instance);
+
+        if (baseAnimations.length) {
+          const mixer = new THREE.AnimationMixer(instance);
+          baseAnimations.forEach((clip) => mixer.clipAction(clip).play());
+          mixers.add(mixer);
+          mixerByObject.set(instance, mixer);
+        }
+
+        return instance;
+      }
+
+      function disposeModelInstance(instance) {
+        const mixer = mixerByObject.get(instance);
+        if (mixer) {
+          mixer.stopAllAction();
+          mixers.delete(mixer);
+          mixerByObject.delete(instance);
+        }
+      }
+
+      function hideOverlay() {
+        overlay.classList.add('hidden');
+        setTimeout(() => overlay.remove(), 450);
+      }
+
+      const arButton = ARButton.createButton(renderer, {
+        requiredFeatures: ['hit-test'],
+        domOverlay: { root: document.body },
+      });
+      document.body.appendChild(arButton);
+
+      renderer.xr.addEventListener('sessionstart', () => {
+        document.body.classList.add('ar-active');
+        scene.background = null;
+        ground.visible = false;
+        if (displayModel) {
+          scene.remove(displayModel);
+          disposeModelInstance(displayModel);
+        }
+        instructions.classList.add('hidden');
+      });
+
+      renderer.xr.addEventListener('sessionend', () => {
+        document.body.classList.remove('ar-active');
+        scene.background = defaultBackground;
+        ground.visible = true;
+        reticle.visible = false;
+        hitTestRequested = false;
+        referenceSpace = null;
+
+        if (displayModel) {
+          scene.remove(displayModel);
+          disposeModelInstance(displayModel);
+        }
+        placedModels.forEach((model) => {
+          scene.remove(model);
+          disposeModelInstance(model);
+        });
+        placedModels.clear();
+        if (baseModel) {
+          displayModel = createModelInstance();
+          if (displayModel) {
+            scene.add(displayModel);
+          }
+        }
+        instructions.classList.remove('hidden');
+      });
+
+      const clock = new THREE.Clock();
+
+      renderer.setAnimationLoop((time, frame) => {
+        const delta = clock.getDelta();
+        mixers.forEach((mixer) => mixer.update(delta));
+
+        if (!renderer.xr.isPresenting) {
+          controls.update();
+        }
+
+        if (renderer.xr.isPresenting && frame) {
+          const session = renderer.xr.getSession();
+
+          if (!hitTestRequested) {
+            session
+              .requestReferenceSpace('viewer')
+              .then((space) => session.requestHitTestSource({ space }))
+              .then((source) => {
+                hitTestSource = source;
+              })
+              .catch((error) => console.warn('Hit test no disponible', error));
+
+            session.addEventListener('end', () => {
+              hitTestSource = null;
+              hitTestRequested = false;
+            });
+
+            hitTestRequested = true;
+          }
+
+          if (hitTestSource) {
+            if (!referenceSpace) {
+              referenceSpace = renderer.xr.getReferenceSpace();
+            }
+            const hitTestResults = frame.getHitTestResults(hitTestSource);
+            if (hitTestResults.length) {
+              const hit = hitTestResults[0];
+              const pose = hit.getPose(referenceSpace);
+              reticle.visible = true;
+              reticle.matrix.fromArray(pose.transform.matrix);
+            } else {
+              reticle.visible = false;
+            }
+          }
+        }
+
+        renderer.render(scene, camera);
+      });
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
 </html>
